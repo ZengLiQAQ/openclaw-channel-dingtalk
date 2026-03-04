@@ -114,7 +114,13 @@ describe('inbound-handler', () => {
         mockedAxiosGet.mockReset();
         shared.sendBySessionMock.mockReset();
         shared.sendMessageMock.mockReset();
-        shared.sendMessageMock.mockResolvedValue({ ok: true });
+        shared.sendMessageMock.mockImplementation(async (_config: any, _to: any, text: any, options: any) => {
+            // Simulate real sendMessage behavior: update lastStreamedContent when appending to card
+            if (options?.card && options?.cardUpdateMode === 'append') {
+                options.card.lastStreamedContent = text;
+            }
+            return { ok: true };
+        });
         shared.extractMessageContentMock.mockReset();
         shared.findCardContentMock.mockReset();
         shared.findCardContentMock.mockReturnValue(null);
@@ -1788,7 +1794,7 @@ describe('inbound-handler', () => {
             .fn()
             .mockImplementation(async ({ dispatcherOptions }) => {
                 await dispatcherOptions.deliver({ text: 'tool output' }, { kind: 'tool' });
-                return { queuedFinal: '' };
+                return { queuedFinal: false };
             });
         shared.getRuntimeMock.mockReturnValueOnce(runtime);
 
