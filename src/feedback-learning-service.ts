@@ -420,7 +420,7 @@ export function applyManualGlobalLearningRule(params: {
     return null;
   }
   const ruleId = `manual_${Date.now()}`;
-  const exactReplyMatch = params.instruction.trim().match(/^当用户问[“\"](.+?)[”\"]时，必须回答[“\"](.+?)[”\"][。.!！]?$/);
+  const exactReplyMatch = params.instruction.trim().match(/^当用户问[“"](.+?)[”"]时，必须回答[“"](.+?)[”"][。.!！]?$/);
   upsertLearnedRule({
     storePath: params.storePath,
     accountId: params.accountId,
@@ -504,7 +504,7 @@ export function applyManualTargetLearningRule(params: {
     return null;
   }
   const ruleId = `manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-  const exactReplyMatch = params.instruction.trim().match(/^当用户问[“\"](.+?)[”\"]时，必须回答[“\"](.+?)[”\"][。.!！]?$/);
+  const exactReplyMatch = params.instruction.trim().match(/^当用户问[“"](.+?)[”"]时，必须回答[“"](.+?)[”"][。.!！]?$/);
   upsertTargetRule({
     storePath: params.storePath,
     accountId: params.accountId,
@@ -541,7 +541,7 @@ export function applyManualTargetsLearningRule(params: {
       targetId,
       instruction: params.instruction,
     }))
-    .map((result, index) => result ? { targetId: params.targetIds[index]!, ruleId: result.ruleId } : null)
+    .map((result, index) => result ? { targetId: params.targetIds[index], ruleId: result.ruleId } : null)
     .filter(Boolean) as Array<{ targetId: string; ruleId: string }>;
 }
 
@@ -614,10 +614,30 @@ export function listScopedLearningRules(params: {
 }
 
 export function normalizeManualTriggerText(input: string | undefined): string {
-  return String(input || "")
-    .replace(/^[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\ufeff]+/g, "")
+  return stripLeadingInvisibleChars(String(input || ""))
     .trim()
     .replace(/[。.!！?？]+$/g, "")
     .replace(/\s+/g, " ")
     .toLowerCase();
+}
+
+function stripLeadingInvisibleChars(value: string): string {
+  let index = 0;
+  while (index < value.length) {
+    const codePoint = value.codePointAt(index);
+    if (
+      codePoint === undefined ||
+      !(
+        (codePoint >= 0x00 && codePoint <= 0x1f) ||
+        (codePoint >= 0x7f && codePoint <= 0x9f) ||
+        (codePoint >= 0x200b && codePoint <= 0x200f) ||
+        codePoint === 0x2060 ||
+        codePoint === 0xfeff
+      )
+    ) {
+      break;
+    }
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  return value.slice(index);
 }

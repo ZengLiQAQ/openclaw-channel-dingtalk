@@ -16,10 +16,10 @@ export function maskSensitiveData(data: unknown): any {
     return data as string | number;
   }
 
-  const masked = JSON.parse(JSON.stringify(data)) as Record<string, any>;
+  const masked = JSON.parse(JSON.stringify(data)) as Record<string, unknown>;
   const sensitiveFields = new Set(["token", "accessToken"]);
 
-  function maskObj(obj: any): void {
+  function maskObj(obj: Record<string, unknown>): void {
     for (const key in obj) {
       if (sensitiveFields.has(key)) {
         const val = obj[key];
@@ -28,14 +28,53 @@ export function maskSensitiveData(data: unknown): any {
         } else if (typeof val === "string") {
           obj[key] = "*".repeat(val.length);
         }
-      } else if (typeof obj[key] === "object" && obj[key] !== null) {
-        maskObj(obj[key]);
+      } else if (typeof obj[key] === "object" && obj[key] !== null && !Array.isArray(obj[key])) {
+        maskObj(obj[key] as Record<string, unknown>);
       }
     }
   }
 
   maskObj(masked);
   return masked;
+}
+
+export function stringifyUnknown(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized ?? String(value);
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+export function getErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) {
+    return err.message;
+  }
+  if (err && typeof err === "object") {
+    const record = err as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message;
+    }
+  }
+  return stringifyUnknown(err);
+}
+
+export function getErrorResponseData(err: unknown): unknown {
+  if (!err || typeof err !== "object") {
+    return undefined;
+  }
+  return (err as { response?: { data?: unknown } }).response?.data;
 }
 
 export function formatDingTalkErrorPayload(payload: unknown): string {
@@ -220,16 +259,16 @@ export function cleanupOrphanedTempFiles(log?: Logger): number {
           cleaned++;
           log?.debug?.(`[DingTalk] Cleaned up orphaned temp file: ${file}`);
         }
-      } catch (err: any) {
-        log?.debug?.(`[DingTalk] Failed to cleanup temp file ${file}: ${err.message}`);
+      } catch (err: unknown) {
+        log?.debug?.(`[DingTalk] Failed to cleanup temp file ${file}: ${getErrorMessage(err)}`);
       }
     }
 
     if (cleaned > 0) {
       log?.info?.(`[DingTalk] Cleaned up ${cleaned} orphaned temp files`);
     }
-  } catch (err: any) {
-    log?.debug?.(`[DingTalk] Failed to cleanup temp directory: ${err.message}`);
+  } catch (err: unknown) {
+    log?.debug?.(`[DingTalk] Failed to cleanup temp directory: ${getErrorMessage(err)}`);
   }
 
   return cleaned;
@@ -248,13 +287,14 @@ export async function retryWithBackoff<T>(
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
-    } catch (err: any) {
-      const statusCode = err.response?.status;
+    } catch (err: unknown) {
+      const statusCode = (err as { response?: { status?: number } }).response?.status;
       const isRetryable =
         statusCode === 401 || statusCode === 429 || (statusCode && statusCode >= 500);
 
-      if (err.response?.data !== undefined) {
-        log?.debug?.(formatDingTalkErrorPayloadLog("retry.beforeDecision", err.response.data));
+      const responseData = getErrorResponseData(err);
+      if (responseData !== undefined) {
+        log?.debug?.(formatDingTalkErrorPayloadLog("retry.beforeDecision", responseData));
       }
 
       if (!isRetryable || attempt === maxRetries) {

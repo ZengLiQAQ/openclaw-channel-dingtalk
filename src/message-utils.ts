@@ -31,7 +31,7 @@ function parseBizCustomActionUrl(url: string | undefined): DingTalkDocMeta | nul
 }
 
 function extractRichTextQuoteParts(
-  richText: Array<Record<string, any>> | undefined,
+  richText: Array<Record<string, unknown>> | undefined,
 ): { summary: string; pictureDownloadCode?: string; pictureDownloadCodes?: string[] } | null {
   if (!Array.isArray(richText) || richText.length === 0) {
     return null;
@@ -41,8 +41,18 @@ function extractRichTextQuoteParts(
   const pictureDownloadCodes: string[] = [];
 
   for (const part of richText) {
-    const partType = part.msgType || part.type;
-    const textValue = typeof part.content === "string" ? part.content : part.text;
+    const partType =
+      typeof part.msgType === "string"
+        ? part.msgType
+        : typeof part.type === "string"
+          ? part.type
+          : undefined;
+    const textValue =
+      typeof part.content === "string"
+        ? part.content
+        : typeof part.text === "string"
+          ? part.text
+          : undefined;
 
     if ((partType === "text" || partType === undefined) && textValue) {
       textParts.push(textValue);
@@ -60,7 +70,12 @@ function extractRichTextQuoteParts(
       continue;
     }
     if (partType === "at") {
-      const atName = part.atName || textValue || "某人";
+      const atName =
+        typeof part.atName === "string"
+          ? part.atName
+          : typeof textValue === "string"
+            ? textValue
+            : "某人";
       textParts.push(`@${atName}`);
       continue;
     }
@@ -309,8 +324,9 @@ export function extractMessageContent(data: DingTalkInboundMessage): MessageCont
     };
   }
   if (msgtype === "chatRecord") {
-    const summary = String((data.content as any)?.summary || "").trim();
-    const rawRecord = (data.content as any)?.chatRecord;
+    const content = data.content as Record<string, unknown> | undefined;
+    const summary = typeof content?.summary === "string" ? content.summary.trim() : "";
+    const rawRecord = content?.chatRecord;
     if (
       summary === "[]" ||
       (typeof rawRecord === "string" && rawRecord.trim() === "[]") ||

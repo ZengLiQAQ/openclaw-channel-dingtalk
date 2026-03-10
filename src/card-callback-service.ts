@@ -14,8 +14,15 @@ function stringifyCandidate(value: unknown): string {
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    return "[unserializable]";
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }
 
 function parseEmbeddedJson(value: unknown): unknown {
@@ -29,17 +36,18 @@ function parseEmbeddedJson(value: unknown): unknown {
   }
 }
 
-export function extractCardActionSummary(data: any): string {
+export function extractCardActionSummary(data: unknown): string {
+  const record = asRecord(data);
   const candidates = [
-    data?.action,
-    data?.actionType,
-    data?.actionValue,
-    data?.value,
-    data?.eventType,
-    data?.operate,
-    data?.callbackType,
-    data?.cardPrivateData,
-    data?.privateData,
+    record?.action,
+    record?.actionType,
+    record?.actionValue,
+    record?.value,
+    record?.eventType,
+    record?.operate,
+    record?.callbackType,
+    record?.cardPrivateData,
+    record?.privateData,
   ].filter((value) => value !== undefined && value !== null);
 
   if (candidates.length === 0) {
@@ -49,36 +57,40 @@ export function extractCardActionSummary(data: any): string {
   return candidates.map(stringifyCandidate).join(" | ");
 }
 
-export function extractCardActionId(data: any): string | undefined {
-  const embeddedValue = parseEmbeddedJson(data?.value);
-  const embeddedContent = parseEmbeddedJson(data?.content);
+export function extractCardActionId(data: unknown): string | undefined {
+  const record = asRecord(data);
+  const embeddedValue = parseEmbeddedJson(record?.value);
+  const embeddedContent = parseEmbeddedJson(record?.content);
 
-  for (const source of [embeddedValue, embeddedContent, data].filter(Boolean)) {
-    const actionIds = source?.cardPrivateData?.actionIds;
+  for (const source of [embeddedValue, embeddedContent, record].filter(Boolean)) {
+    const sourceRecord = asRecord(source);
+    const cardPrivateData = asRecord(sourceRecord?.cardPrivateData);
+    const actionIds = cardPrivateData?.actionIds;
     if (Array.isArray(actionIds) && actionIds.length > 0 && typeof actionIds[0] === "string") {
       return actionIds[0];
     }
-    if (typeof source?.actionValue === "string" && source.actionValue.trim()) {
-      return source.actionValue.trim();
+    if (typeof sourceRecord?.actionValue === "string" && sourceRecord.actionValue.trim()) {
+      return sourceRecord.actionValue.trim();
     }
-    if (typeof source?.eventKey === "string" && source.eventKey.trim()) {
-      return source.eventKey.trim();
+    if (typeof sourceRecord?.eventKey === "string" && sourceRecord.eventKey.trim()) {
+      return sourceRecord.eventKey.trim();
     }
-    if (typeof source?.value === "string" && source.value.trim()) {
-      return source.value.trim();
+    if (typeof sourceRecord?.value === "string" && sourceRecord.value.trim()) {
+      return sourceRecord.value.trim();
     }
   }
 
   return undefined;
 }
 
-export function analyzeCardCallback(data: any): CardCallbackAnalysis {
+export function analyzeCardCallback(data: unknown): CardCallbackAnalysis {
+  const record = asRecord(data);
   const summary = extractCardActionSummary(data);
   const actionId = extractCardActionId(data);
-  const embeddedValue = parseEmbeddedJson(data?.value) as Record<string, any> | undefined;
-  const embeddedContent = parseEmbeddedJson(data?.content) as Record<string, any> | undefined;
+  const embeddedValue = asRecord(parseEmbeddedJson(record?.value));
+  const embeddedContent = asRecord(parseEmbeddedJson(record?.content));
   const processQueryKey =
-    (typeof data?.processQueryKey === "string" && data.processQueryKey.trim()) ||
+    (typeof record?.processQueryKey === "string" && record.processQueryKey.trim()) ||
     (typeof embeddedValue?.processQueryKey === "string" && embeddedValue.processQueryKey.trim()) ||
     (typeof embeddedContent?.processQueryKey === "string" && embeddedContent.processQueryKey.trim()) ||
     undefined;
@@ -87,9 +99,9 @@ export function analyzeCardCallback(data: any): CardCallbackAnalysis {
     return { summary, actionId, processQueryKey };
   }
 
-  const spaceType = typeof data?.spaceType === "string" ? data.spaceType.trim().toLowerCase() : "";
-  const spaceId = typeof data?.spaceId === "string" ? data.spaceId.trim() : "";
-  const userId = typeof data?.userId === "string" ? data.userId.trim() : "";
+  const spaceType = typeof record?.spaceType === "string" ? record.spaceType.trim().toLowerCase() : "";
+  const spaceId = typeof record?.spaceId === "string" ? record.spaceId.trim() : "";
+  const userId = typeof record?.userId === "string" ? record.userId.trim() : "";
   const feedbackTarget = spaceType === "im" ? userId : spaceId;
   const feedbackAckText =
     actionId === "feedback_up"

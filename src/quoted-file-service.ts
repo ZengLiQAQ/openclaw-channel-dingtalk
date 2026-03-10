@@ -6,6 +6,13 @@ import { getDingTalkRuntime } from "./runtime";
 import type { DingTalkConfig, Logger, MediaFile } from "./types";
 import { formatDingTalkErrorPayload, formatDingTalkErrorPayloadLog } from "./utils";
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return undefined;
+    }
+    return value as Record<string, unknown>;
+}
+
 const ipv4OnlyHttpAgent = new http.Agent({ family: 4 });
 const ipv4OnlyHttpsAgent = new https.Agent({ family: 4 });
 
@@ -100,12 +107,17 @@ export async function getUnionIdByStaffId(
         { userid: staffId },
     );
 
-    const payload = resp.data as Record<string, any>;
+    const payload = asRecord(resp.data) ?? {};
+    const errcode = typeof payload.errcode === "number" || typeof payload.errcode === "string"
+        ? String(payload.errcode)
+        : "unknown";
+    const errmsg = typeof payload.errmsg === "string" ? payload.errmsg : "unknown";
     if (payload.errcode !== 0) {
-        throw new Error(`topapi/v2/user/get failed: errcode=${payload.errcode} errmsg=${payload.errmsg}`);
+        throw new Error(`topapi/v2/user/get failed: errcode=${errcode} errmsg=${errmsg}`);
     }
 
-    const unionId = payload.result?.unionid as string;
+    const unionIdValue = asRecord(payload.result)?.unionid;
+    const unionId = typeof unionIdValue === "string" ? unionIdValue : undefined;
     if (!unionId) {
         throw new Error(`topapi/v2/user/get returned no unionid for staffId=${staffId}`);
     }
@@ -133,7 +145,8 @@ export async function getGroupFileSpaceId(
         { headers: { "x-acs-dingtalk-access-token": token } },
     );
 
-    const spaceId = (resp.data as Record<string, any>)?.space?.spaceId as string;
+    const spaceIdValue = asRecord(asRecord(resp.data)?.space)?.spaceId;
+    const spaceId = typeof spaceIdValue === "string" ? spaceIdValue : undefined;
     if (!spaceId) {
         throw new Error(`convFile spaces/query returned no spaceId for conversationId=${openConversationId}`);
     }
@@ -168,11 +181,11 @@ export async function findFileByTimestamp(
     let nextToken: string | undefined;
 
     for (let page = 0; page < MAX_PAGES; page++) {
-        const body: Record<string, any> = {
+        const body: Record<string, unknown> = {
             option: { maxResults: PAGE_SIZE },
         };
         if (nextToken) {
-            body.option.nextToken = nextToken;
+            (body.option as { nextToken?: string }).nextToken = nextToken;
         }
 
         const resp = await axios.post(
@@ -181,8 +194,8 @@ export async function findFileByTimestamp(
             { headers: { "x-acs-dingtalk-access-token": token } },
         );
 
-        const data = resp.data as Record<string, any>;
-        const dentries = (data.dentries || []) as Array<Record<string, any>>;
+        const data = asRecord(resp.data) ?? {};
+        const dentries = Array.isArray(data.dentries) ? data.dentries as Array<Record<string, unknown>> : [];
 
         let lastFileTime: number | undefined;
         for (const entry of dentries) {
@@ -198,7 +211,8 @@ export async function findFileByTimestamp(
                     bestMatch = { dentryId: entry.id as string, name: entry.name as string };
                 }
             } catch {
-                log?.debug?.(`[DingTalk][QuotedFile] Failed to parse createTime: ${entry.createTime}`);
+                const createTime = typeof entry.createTime === "string" ? entry.createTime : JSON.stringify(entry.createTime);
+                log?.debug?.(`[DingTalk][QuotedFile] Failed to parse createTime: ${createTime}`);
             }
         }
 
@@ -209,7 +223,7 @@ export async function findFileByTimestamp(
             break;
         }
 
-        nextToken = data.nextToken as string | undefined;
+        nextToken = typeof data.nextToken === "string" ? data.nextToken : undefined;
         if (!nextToken) {
             break;
         }
@@ -237,17 +251,19 @@ export async function downloadGroupFile(
             { headers: { "x-acs-dingtalk-access-token": token } },
         );
 
-        const info = infoResp.data as Record<string, any>;
-        const headerSig = info?.headerSignatureInfo;
-        resourceUrl = headerSig?.resourceUrls?.[0] as string | undefined || "";
+        const info = asRecord(infoResp.data) ?? {};
+        const headerSig = asRecord(info.headerSignatureInfo);
+        const resourceUrls = headerSig && Array.isArray(headerSig.resourceUrls) ? headerSig.resourceUrls : undefined;
+        resourceUrl = typeof resourceUrls?.[0] === "string" ? resourceUrls[0] : "";
         if (!resourceUrl) {
             log?.warn?.("[DingTalk][QuotedFile] downloadInfos/query returned no resourceUrl");
             return null;
         }
 
         const sigHeaders: Record<string, string> = {};
-        if (headerSig?.headers) {
-            for (const [k, v] of Object.entries(headerSig.headers)) {
+        const headerMap = asRecord(headerSig?.headers);
+        if (headerMap) {
+            for (const [k, v] of Object.entries(headerMap)) {
                 if (typeof v === "string") {
                     sigHeaders[k] = v;
                 }
@@ -357,7 +373,7 @@ export async function resolveQuotedFile(
             fileId: match.dentryId,
             name: match.name,
         };
-    } catch (err: any) {
+    } catch (err: unknown) {
         if (log?.warn) {
             if (axios.isAxiosError(err) && err.response?.data !== undefined) {
                 log.warn(formatDingTalkErrorPayloadLog("quotedFile.resolve", err.response.data));

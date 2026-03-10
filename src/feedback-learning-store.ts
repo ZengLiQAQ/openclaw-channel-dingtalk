@@ -115,7 +115,7 @@ export interface ScopedLearnedRuleRecord extends LearnedRuleRecord {
 }
 
 function trimNewest<T extends { createdAt: number }>(entries: T[], limit: number): T[] {
-  return [...entries].sort((left, right) => right.createdAt - left.createdAt).slice(0, limit);
+  return entries.toSorted((left, right) => right.createdAt - left.createdAt).slice(0, limit);
 }
 
 function readListBucket<T>(
@@ -239,7 +239,7 @@ export function upsertLearnedRule(
   });
   bucket.rules[params.rule.ruleId] = params.rule;
   const trimmedRules = Object.values(bucket.rules)
-    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, MAX_RULES);
   const rules: Record<string, LearnedRuleRecord> = {};
   for (const rule of trimmedRules) {
@@ -265,7 +265,7 @@ export function listLearnedRules(
     format: "json",
     fallback: { updatedAt: 0, rules: {} },
   });
-  return Object.values(bucket.rules).sort((left, right) => right.updatedAt - left.updatedAt);
+  return Object.values(bucket.rules).toSorted((left, right) => right.updatedAt - left.updatedAt);
 }
 
 export function disableLearnedRule(
@@ -391,7 +391,7 @@ export function upsertTargetRule(
   const bucket = readTargetRuleBucket(params);
   bucket.rules[params.rule.ruleId] = params.rule;
   const trimmedRules = Object.values(bucket.rules)
-    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, MAX_RULES);
   const rules: Record<string, LearnedRuleRecord> = {};
   for (const rule of trimmedRules) {
@@ -414,7 +414,7 @@ export function upsertTargetRule(
 export function listTargetRules(
   params: { storePath?: string; accountId: string; targetId: string },
 ): LearnedRuleRecord[] {
-  return Object.values(readTargetRuleBucket(params).rules).sort(
+  return Object.values(readTargetRuleBucket(params).rules).toSorted(
     (left, right) => right.updatedAt - left.updatedAt,
   );
 }
@@ -431,7 +431,7 @@ export function listAllScopedRules(
       targetId,
     })),
   );
-  return [...targetRules, ...globalRules].sort((left, right) => right.updatedAt - left.updatedAt);
+  return [...targetRules, ...globalRules].toSorted((left, right) => right.updatedAt - left.updatedAt);
 }
 
 export function disableScopedRule(
@@ -539,5 +539,5 @@ export function listTargetSets(
     format: "json",
     fallback: { updatedAt: 0, sets: {} },
   });
-  return Object.values(bucket.sets).sort((left, right) => right.updatedAt - left.updatedAt);
+  return Object.values(bucket.sets).toSorted((left, right) => right.updatedAt - left.updatedAt);
 }

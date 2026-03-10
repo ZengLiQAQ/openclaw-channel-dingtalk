@@ -183,8 +183,8 @@ export async function getMp3DurationSeconds(filePath: string, log?: Logger): Pro
 
     log?.warn?.(`[DingTalk] Could not parse MP3 duration from ${filePath} (found ${frameCount} frames)`);
     return 0;
-  } catch (err: any) {
-    log?.error?.(`[DingTalk] Failed to get MP3 duration: ${err.message}`);
+  } catch (err: unknown) {
+    log?.error?.(`[DingTalk] Failed to get MP3 duration: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
@@ -630,14 +630,15 @@ export async function uploadMedia(
       log?.error?.(`[DingTalk] Media upload failed: ${JSON.stringify(response.data)}`);
       return null;
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Handle file system errors (e.g., file not found, permission denied)
-    if (err.code === "ENOENT") {
+    const errno = err as NodeJS.ErrnoException;
+    if (errno.code === "ENOENT") {
       log?.error?.(`[DingTalk] Media file not found: ${mediaPath}`);
-    } else if (err.code === "EACCES") {
+    } else if (errno.code === "EACCES") {
       log?.error?.(`[DingTalk] Permission denied accessing media file: ${mediaPath}`);
     } else {
-      log?.error?.(`[DingTalk] Failed to upload media: ${err.message}`);
+      log?.error?.(`[DingTalk] Failed to upload media: ${err instanceof Error ? err.message : String(err)}`);
       if (axios.isAxiosError(err) && err.response) {
         const status = err.response.status;
         const statusText = err.response.statusText;

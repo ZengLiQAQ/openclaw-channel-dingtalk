@@ -53,7 +53,9 @@ function composeCardContentForAppend(previous: string | undefined, incoming: str
 const DINGTALK_TEXT_CHUNK_LIMIT = 3800;
 
 function splitMarkdownChunks(text: string, limit = DINGTALK_TEXT_CHUNK_LIMIT): string[] {
-  if (!text || text.length <= limit) return [text];
+  if (!text || text.length <= limit) {
+    return [text];
+  }
   const chunks: string[] = [];
   let buf = "";
   const lines = text.split("\n");
@@ -62,14 +64,20 @@ function splitMarkdownChunks(text: string, limit = DINGTALK_TEXT_CHUNK_LIMIT): s
   for (const line of lines) {
     const fenceCount = (line.match(/```/g) || []).length;
     if (buf.length + line.length + 1 > limit && buf.length > 0) {
-      if (inCode) buf += "\n```";
+      if (inCode) {
+        buf += "\n```";
+      }
       chunks.push(buf);
       buf = inCode ? "```\n" : "";
     }
     buf += (buf ? "\n" : "") + line;
-    if (fenceCount % 2 === 1) inCode = !inCode;
+    if (fenceCount % 2 === 1) {
+      inCode = !inCode;
+    }
   }
-  if (buf) chunks.push(buf);
+  if (buf) {
+    chunks.push(buf);
+  }
   return chunks;
 }
 

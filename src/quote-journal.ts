@@ -73,7 +73,7 @@ function purgeExpiredEntries(entries: Record<string, QuoteJournalEntry>, nowMs: 
 }
 
 function trimEntries(entries: Record<string, QuoteJournalEntry>): void {
-  const sorted = Object.values(entries).sort((left, right) => right.createdAt - left.createdAt);
+  const sorted = Object.values(entries).toSorted((left, right) => right.createdAt - left.createdAt);
   for (const stale of sorted.slice(MAX_ENTRIES_PER_CONVERSATION)) {
     delete entries[stale.msgId];
   }
