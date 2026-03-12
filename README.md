@@ -52,15 +52,39 @@ openclaw plugins install @soimy/dingtalk
 如果你想对插件进行二次开发，可以先克隆仓库：
 
 ```bash
-# 1. 克隆仓库
+# 1. 在父仓库外单独克隆插件仓库（推荐）
 git clone https://github.com/soimy/openclaw-channel-dingtalk.git
 cd openclaw-channel-dingtalk
 
 # 2. 安装依赖 (必需)
 npm install
 
-# 3. 以链接模式安装 (方便修改代码后实时生效)
+# 3. 用全局 OpenClaw 以链接模式安装 (方便修改代码后实时生效)
 openclaw plugins install -l .
+```
+
+推荐的本地开发布局：
+
+```text
+~/Repo/openclaw                    # 仅用于阅读源码、跳转 plugin-sdk、研究内部链路
+~/Repo/openclaw-channel-dingtalk   # 插件主开发仓库
+~/.openclaw/extensions/...         # 由 openclaw plugins install -l 管理的运行时链接
+```
+
+这种布局比“把插件放在 `openclaw/extensions/` 里再单独开 worktree”更稳定，原因是：
+
+- 避免 submodule / worktree 的 gitdir 指向混乱
+- 插件仓库可以独立切分支、开 worktree、做实验
+- 运行时和源码阅读环境彻底解耦
+
+如果你的本地 `openclaw` 仓库位于 `~/Repo/openclaw`，而插件仓库位于 `~/Repo/openclaw-channel-dingtalk`，本仓库当前的 `tsconfig.json` 已兼容这种目录结构，会优先解析父仓库源码中的 `src/plugin-sdk`，在源码不存在时再回退到 `dist/plugin-sdk` 类型产物。
+
+如果你此前是把插件作为 `~/Repo/openclaw/extensions/openclaw-channel-dingtalk` 下的 submodule 使用，建议迁移为独立仓库后再执行：
+
+```bash
+cd ~/Repo/openclaw-channel-dingtalk
+openclaw plugins install -l .
+openclaw gateway restart
 ```
 
 ### 方法 C：手动安装
@@ -181,6 +205,8 @@ NPM_CONFIG_REGISTRY=https://registry.npmmirror.com npm install
 git pull
 openclaw gateway restart
 ```
+
+如果你采用推荐的独立仓库布局，更新插件代码时不需要改动本地 `~/Repo/openclaw` 仓库；后者仅用于代码解析和内部实现研究。
 
 ## 配置
 
