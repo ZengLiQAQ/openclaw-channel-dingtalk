@@ -1304,6 +1304,46 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         dispatcherOptions: {
           responsePrefix: "",
           deliver: async (payload: ReplyStreamPayload, info?: ReplyChunkInfo) => {
+            async function deliverMediaAttachments(urls: string[]) {
+              for (const rawMediaUrl of urls) {
+                const preparedMedia = await prepareMediaInput(
+                  rawMediaUrl,
+                  log,
+                  dingtalkConfig.mediaUrlAllowlist,
+                );
+                try {
+                  const actualMediaPath = preparedMedia.path;
+                  const mediaType = resolveOutboundMediaType({
+                    mediaPath: actualMediaPath,
+                    asVoice: false,
+                  });
+                  if (sessionWebhook) {
+                    await sendBySession(dingtalkConfig, sessionWebhook, "", {
+                      mediaPath: actualMediaPath,
+                      mediaType,
+                      log,
+                    });
+                  } else {
+                    const sendResult = await sendProactiveMedia(
+                      dingtalkConfig,
+                      to,
+                      actualMediaPath,
+                      mediaType,
+                      {
+                        accountId,
+                        log,
+                      },
+                    );
+                    if (!sendResult.ok) {
+                      throw new Error(sendResult.error || "Media reply send failed");
+                    }
+                  }
+                } finally {
+                  await preparedMedia.cleanup?.();
+                }
+              }
+            }
+
             try {
               const richPayload = payload as typeof payload & {
                 mediaUrl?: string;
@@ -1325,45 +1365,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
                 await controller!.flush();
                 await controller!.waitForInFlight();
                 controller!.stop();
-                // Send media attachments before finalizing the card
                 if (mediaUrls.length > 0) {
-                  for (const rawMediaUrl of mediaUrls) {
-                    const preparedMedia = await prepareMediaInput(
-                      rawMediaUrl,
-                      log,
-                      dingtalkConfig.mediaUrlAllowlist,
-                    );
-                    try {
-                      const actualMediaPath = preparedMedia.path;
-                      const mediaType = resolveOutboundMediaType({
-                        mediaPath: actualMediaPath,
-                        asVoice: false,
-                      });
-                      if (sessionWebhook) {
-                        await sendBySession(dingtalkConfig, sessionWebhook, "", {
-                          mediaPath: actualMediaPath,
-                          mediaType,
-                          log,
-                        });
-                      } else {
-                        const sendResult = await sendProactiveMedia(
-                          dingtalkConfig,
-                          to,
-                          actualMediaPath,
-                          mediaType,
-                          {
-                            accountId,
-                            log,
-                          },
-                        );
-                        if (!sendResult.ok) {
-                          throw new Error(sendResult.error || "Media reply send failed");
-                        }
-                      }
-                    } finally {
-                      await preparedMedia.cleanup?.();
-                    }
-                  }
+                  await deliverMediaAttachments(mediaUrls);
                 }
                 if (!isCardInTerminalState(currentAICard.state) && !controller!.isFailed()) {
                   try {
@@ -1422,43 +1425,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
               // ---- media delivery (all modes) ----
               if (mediaUrls.length > 0) {
-                for (const rawMediaUrl of mediaUrls) {
-                  const preparedMedia = await prepareMediaInput(
-                    rawMediaUrl,
-                    log,
-                    dingtalkConfig.mediaUrlAllowlist,
-                  );
-                  try {
-                    const actualMediaPath = preparedMedia.path;
-                    const mediaType = resolveOutboundMediaType({
-                      mediaPath: actualMediaPath,
-                      asVoice: false,
-                    });
-                    if (sessionWebhook) {
-                      await sendBySession(dingtalkConfig, sessionWebhook, "", {
-                        mediaPath: actualMediaPath,
-                        mediaType,
-                        log,
-                      });
-                    } else {
-                      const sendResult = await sendProactiveMedia(
-                        dingtalkConfig,
-                        to,
-                        actualMediaPath,
-                        mediaType,
-                        {
-                          accountId,
-                          log,
-                        },
-                      );
-                      if (!sendResult.ok) {
-                        throw new Error(sendResult.error || "Media reply send failed");
-                      }
-                    }
-                  } finally {
-                    await preparedMedia.cleanup?.();
-                  }
-                }
+                await deliverMediaAttachments(mediaUrls);
               }
 
               // ---- non-card mode (markdown/text) ----
