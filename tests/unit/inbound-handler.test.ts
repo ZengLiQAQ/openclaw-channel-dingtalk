@@ -2095,6 +2095,8 @@ describe('inbound-handler', () => {
 
     it('handleDingTalkMessage adds and recalls native thinking reaction in markdown mode', async () => {
         mockedAxiosPost.mockResolvedValue({ data: { success: true } } as any);
+        const releaseFn = vi.fn();
+        shared.acquireSessionLockMock.mockResolvedValueOnce(releaseFn);
 
         await handleDingTalkMessage({
             cfg: {},
@@ -2147,6 +2149,12 @@ describe('inbound-handler', () => {
             }),
             expect.any(Object),
         );
+        expect(mockedAxiosPost.mock.invocationCallOrder[0]).toBeLessThan(
+            shared.acquireSessionLockMock.mock.invocationCallOrder[0],
+        );
+        expect(releaseFn.mock.invocationCallOrder[0]).toBeLessThan(
+            mockedAxiosPost.mock.invocationCallOrder[1],
+        );
     });
 
     it('handleDingTalkMessage does not add thinking reaction in card mode', async () => {
@@ -2176,6 +2184,39 @@ describe('inbound-handler', () => {
             },
         } as any);
 
+        expect(mockedAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it('handleDingTalkMessage does not add thinking reaction when configured card mode falls back', async () => {
+        shared.createAICardMock.mockResolvedValueOnce(null);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                clientId: 'ding_client',
+                clientSecret: 'secret',
+                dmPolicy: 'open',
+                messageType: 'card',
+                showThinking: false,
+                showThinkingReaction: true,
+            } as any,
+            data: {
+                msgId: 'm5_card_fallback_reaction',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'user_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendMessageMock).toHaveBeenCalled();
         expect(mockedAxiosPost).not.toHaveBeenCalled();
     });
 
