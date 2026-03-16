@@ -79,13 +79,14 @@ export function createCardDraftController(params: {
             if (phase !== "answer") {
                 params.log?.debug?.(`[DingTalk][Draft] phase ${phase} → answer`);
                 phase = "answer";
-            }
-            if (text) {
                 if (turnBoundaryPending && lastAnswerContent) {
                     answerPrefix = lastAnswerContent + "\n\n";
-                    turnBoundaryPending = false;
                 }
-                loop.update(answerPrefix + text);
+                turnBoundaryPending = false;
+            }
+            const trimmed = text?.trimStart();
+            if (trimmed) {
+                loop.update(answerPrefix + trimmed);
             }
         },
 
