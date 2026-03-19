@@ -1,5 +1,6 @@
 import axios from "axios";
 import { normalizeAllowFrom, isSenderAllowed, isSenderGroupAllowed } from "./access-control";
+import { buildAgentSessionKey, resolveSubAgentRoute, dispatchSubAgents } from "./targeting/agent-routing";
 import { classifyAckReactionEmoji } from "./ack-reaction-classifier";
 import { attachNativeAckReaction, recallNativeAckReactionWithRetry } from "./ack-reaction-service";
 import { extractAttachmentText } from "./attachment-text-extractor";
@@ -272,7 +273,7 @@ export async function downloadMedia(
 }
 
 export async function handleDingTalkMessage(params: HandleDingTalkMessageParams): Promise<void> {
-  const { cfg, accountId, data, sessionWebhook, log, dingtalkConfig } = params;
+  const { cfg, accountId, data, sessionWebhook, log, dingtalkConfig, subAgentOptions, preDownloadedMedia } = params;
   const rt = getDingTalkRuntime();
 
   // Save logger globally so shared services can log consistently without threading log everywhere.
@@ -286,12 +287,21 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     return;
   }
 
-  const extractedContent = extractMessageContent(data);
+  // Shallow copy: only .text is reassigned below; nested arrays (atMentions, mediaTypes) are read-only downstream.
+  const extractedContent = { ...extractMessageContent(data) };
   if (!extractedContent.text) {
     return;
   }
 
+  // Add context hint for sub-agent mode, stripping quoted prefix to avoid protocol noise in agent context.
+  if (subAgentOptions) {
+    const cleanText = extractedContent.text.replace(/^\[引用[^\]]*\]\s*/, "");
+    const contextHint = `[你被 @ 为"${subAgentOptions.matchedName}"]\n\n`;
+    extractedContent.text = contextHint + cleanText;
+  }
+
   const isDirect = data.conversationType === "1";
+  const isGroup = !isDirect;
   const senderOriginalId = (data.senderId || "").trim();
   const senderStaffId = (data.senderStaffId || "").trim();
   const senderId = senderStaffId || senderOriginalId;
@@ -413,6 +423,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 
+  // Calculate account store path and session peer (for session alias feature)
   const accountStorePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
     agentId: accountId,
   });
@@ -457,12 +468,54 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     peerIdOverride,
     config: dingtalkConfig,
   });
-  const route = rt.channel.routing.resolveAgentRoute({
-    cfg,
-    channel: "dingtalk",
-    accountId,
-    peer: { kind: sessionPeer.kind, id: sessionPeer.peerId },
-  });
+
+  const route = subAgentOptions
+    ? {
+        agentId: subAgentOptions.agentId,
+        sessionKey: buildAgentSessionKey({
+          rt,
+          cfg,
+          accountId,
+          agentId: subAgentOptions.agentId,
+          peerKind: sessionPeer.kind,
+          peerId: sessionPeer.peerId,
+        }),
+        mainSessionKey: "",
+      }
+    : rt.channel.routing.resolveAgentRoute({
+        cfg,
+        channel: "dingtalk",
+        accountId,
+        peer: { kind: sessionPeer.kind, id: sessionPeer.peerId },
+      });
+
+  // @Sub-Agent routing: resolve @mentions to agents (skip in recursive sub-agent calls)
+  if (!subAgentOptions) {
+    const subAgentRoute = await resolveSubAgentRoute({
+      extractedContent,
+      cfg,
+      isGroup,
+      dingtalkConfig,
+      sessionWebhook,
+      senderId,
+      log,
+    });
+    if (subAgentRoute) {
+      await dispatchSubAgents({
+        ...subAgentRoute,
+        cfg,
+        accountId,
+        data,
+        dingtalkConfig,
+        sessionWebhook,
+        extractedContent,
+        handleMessage: handleDingTalkMessage,
+        downloadMedia,
+        log,
+      });
+      return;
+    }
+  }
 
   // Route resolved before media download for session context and routing metadata.
   const storePath = rt.channel.session.resolveStorePath(cfg.session?.store, {
@@ -969,7 +1022,13 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
 
   let mediaPath: string | undefined;
   let mediaType: string | undefined;
-  if (content.mediaPath && dingtalkConfig.robotCode) {
+
+  // Use pre-downloaded media if available (from sub-agent outer call)
+  if (preDownloadedMedia?.mediaPath) {
+    mediaPath = preDownloadedMedia.mediaPath;
+    mediaType = preDownloadedMedia.mediaType;
+  } else if (content.mediaPath && dingtalkConfig.robotCode) {
+    // Download media only if not pre-downloaded
     const media = await downloadMedia(dingtalkConfig, content.mediaPath, log);
     if (media) {
       mediaPath = media.path;
@@ -1446,6 +1505,8 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   // Serialize dispatchReply + card finalize per session to prevent the runtime
   // from receiving concurrent dispatch calls on the same session key, which
   // causes empty replies for all but the first caller.
+  // Each sub-agent call acquires its own lock since sub-agent sessions have
+  // different session keys (different agentId), so no deadlock risk.
   const releaseSessionLock = await acquireSessionLock(route.sessionKey);
   try {
     if (!ackReactionAttached && shouldAttachAckReaction) {
@@ -1474,7 +1535,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
         ctx,
         cfg,
         dispatcherOptions: {
-          responsePrefix: "",
+          responsePrefix: subAgentOptions?.responsePrefix || "",
           deliver: async (payload: ReplyStreamPayload, info?: ReplyChunkInfo) => {
             try {
               const mediaUrls = extractMediaUrls(payload);
@@ -1524,3 +1585,4 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
   }
 }
+

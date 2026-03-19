@@ -126,6 +126,7 @@ function buildRuntime() {
         resolveAgentRoute: vi
           .fn()
           .mockReturnValue({ agentId: "main", sessionKey: "s1", mainSessionKey: "s1" }),
+        buildAgentSessionKey: vi.fn().mockReturnValue("agent-session-key"),
       },
       media: {
         saveMediaBuffer: vi.fn().mockResolvedValue({
@@ -4469,6 +4470,1080 @@ describe("inbound-handler", () => {
     expect(users).toHaveLength(1);
     expect(users[0]?.canonicalUserId).toBe("staff_user_1");
   });
+
+    it('sends proactive permission hint only once within cooldown window', async () => {
+        recordProactiveRiskObservation({
+            accountId: 'main',
+            targetId: 'manager123',
+            level: 'high',
+            reason: 'Forbidden.AccessDenied.AccessTokenPermissionDenied',
+            source: 'proactive-api',
+        });
+        shared.sendBySessionMock.mockResolvedValue(undefined);
+
+        const params = {
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                ackReaction: '',
+                proactivePermissionHint: { enabled: true, cooldownHours: 24 },
+            } as any,
+            data: {
+                msgId: 'm10',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'manager123',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any;
+
+        await handleDingTalkMessage(params);
+        await handleDingTalkMessage(params);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not send proactive permission hint without proactive API risk observation', async () => {
+        shared.sendBySessionMock.mockResolvedValue(undefined);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                ackReaction: '',
+                proactivePermissionHint: { enabled: true, cooldownHours: 24 },
+            } as any,
+            data: {
+                msgId: 'm11',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: '0341234567',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).not.toHaveBeenCalled();
+    });
+
+    it('matches proactive permission hint risk using senderOriginalId when senderStaffId is present', async () => {
+        recordProactiveRiskObservation({
+            accountId: 'main',
+            targetId: 'raw_sender_1',
+            level: 'high',
+            reason: 'Forbidden.AccessDenied.AccessTokenPermissionDenied',
+            source: 'proactive-api',
+        });
+        shared.sendBySessionMock.mockResolvedValue(undefined);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: {
+                dmPolicy: 'open',
+                messageType: 'markdown',
+                ackReaction: '',
+                proactivePermissionHint: { enabled: true, cooldownHours: 24 },
+            } as any,
+            data: {
+                msgId: 'm11_raw_id',
+                msgtype: 'text',
+                text: { content: 'hello' },
+                conversationType: '1',
+                conversationId: 'cid_ok',
+                senderId: 'raw_sender_1',
+                senderStaffId: 'staff_sender_1',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+        expect(String(shared.sendBySessionMock.mock.calls[0]?.[2])).toContain('主动推送可能失败');
+    });
+
+    it('injects group turn context prompt with authoritative sender metadata', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { groupPolicy: 'open', messageType: 'markdown', ackReaction: '' } as any,
+            data: {
+                msgId: 'm_group_turn_ctx',
+                msgtype: 'text',
+                text: { content: 'hello group' },
+                conversationType: '2',
+                conversationId: 'cid_group_ctx',
+                conversationTitle: 'Dev Group',
+                senderId: 'raw_sender_1',
+                senderStaffId: 'staff_sender_1',
+                senderNick: 'Alice',
+                chatbotUserId: 'bot_1',
+                sessionWebhook: 'https://session.webhook',
+                createAt: Date.now(),
+            },
+        } as any);
+
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                GroupSystemPrompt: expect.stringContaining('Current DingTalk group turn context:'),
+            }),
+        );
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                GroupSystemPrompt: expect.stringContaining('senderDingtalkId: staff_sender_1'),
+            }),
+        );
+        expect(runtime.channel.reply.finalizeInboundContext).toHaveBeenCalledWith(
+            expect.objectContaining({
+                GroupSystemPrompt: expect.stringContaining('senderName: Alice'),
+            }),
+        );
+    });
+
+    it('concurrent messages create independent cards with distinct IDs', async () => {
+        let resolveA!: () => void;
+        const gateA = new Promise<void>((r) => { resolveA = r; });
+
+        const cardA = { cardInstanceId: 'card_A', state: '1', lastUpdated: Date.now() } as any;
+        const cardB = { cardInstanceId: 'card_B', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock
+            .mockResolvedValueOnce(cardA)
+            .mockResolvedValueOnce(cardB);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtimeA = buildRuntime();
+        runtimeA.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
+            await gateA;
+            await dispatcherOptions.deliver({ text: 'reply A' }, { kind: 'final' });
+            return { queuedFinal: 'reply A' };
+        });
+        const runtimeB = buildRuntime();
+        runtimeB.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
+            await dispatcherOptions.deliver({ text: 'reply B' }, { kind: 'final' });
+            return { queuedFinal: 'reply B' };
+        });
+        shared.getRuntimeMock
+            .mockReturnValueOnce(runtimeA)
+            .mockReturnValueOnce(runtimeB);
+
+        const baseParams = {
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', ackReaction: '' } as any,
+        };
+
+        const promiseA = handleDingTalkMessage({
+            ...baseParams,
+            data: {
+                msgId: 'concurrent_A', msgtype: 'text', text: { content: 'hello A' },
+                conversationType: '1', conversationId: 'cid_same', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        const promiseB = handleDingTalkMessage({
+            ...baseParams,
+            data: {
+                msgId: 'concurrent_B', msgtype: 'text', text: { content: 'hello B' },
+                conversationType: '1', conversationId: 'cid_same', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        await promiseB;
+        resolveA();
+        await promiseA;
+
+        expect(shared.createAICardMock).toHaveBeenCalledTimes(2);
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(2);
+
+        const finishCalls = shared.finishAICardMock.mock.calls;
+        const finishedCardIds = finishCalls.map((call: any[]) => call[0].cardInstanceId);
+        expect(finishedCardIds).toContain('card_A');
+        expect(finishedCardIds).toContain('card_B');
+    });
+
+    it('concurrent messages pass correct card reference to sendMessage', async () => {
+        let resolveA!: () => void;
+        const gateA = new Promise<void>((r) => { resolveA = r; });
+
+        const cardA = { cardInstanceId: 'card_A', state: '1', lastUpdated: Date.now() } as any;
+        const cardB = { cardInstanceId: 'card_B', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock
+            .mockResolvedValueOnce(cardA)
+            .mockResolvedValueOnce(cardB);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtimeA = buildRuntime();
+        runtimeA.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
+            await gateA;
+            await dispatcherOptions.deliver({ text: 'tool A' }, { kind: 'tool' });
+            await dispatcherOptions.deliver({ text: 'reply A' }, { kind: 'final' });
+            return { queuedFinal: 'reply A' };
+        });
+        const runtimeB = buildRuntime();
+        runtimeB.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockImplementation(async ({ dispatcherOptions }) => {
+            await dispatcherOptions.deliver({ text: 'tool B' }, { kind: 'tool' });
+            await dispatcherOptions.deliver({ text: 'reply B' }, { kind: 'final' });
+            return { queuedFinal: 'reply B' };
+        });
+        shared.getRuntimeMock
+            .mockReturnValueOnce(runtimeA)
+            .mockReturnValueOnce(runtimeB);
+
+        const baseParams = {
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', ackReaction: '' } as any,
+        };
+
+        const promiseA = handleDingTalkMessage({
+            ...baseParams,
+            data: {
+                msgId: 'bind_A', msgtype: 'text', text: { content: 'hello A' },
+                conversationType: '1', conversationId: 'cid_same', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        const promiseB = handleDingTalkMessage({
+            ...baseParams,
+            data: {
+                msgId: 'bind_B', msgtype: 'text', text: { content: 'hello B' },
+                conversationType: '1', conversationId: 'cid_same', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        await promiseB;
+        resolveA();
+        await promiseA;
+
+        const sendCalls = shared.sendMessageMock.mock.calls;
+        const toolCallA = sendCalls.find((call: any[]) => call[2] === 'tool A');
+        const toolCallB = sendCalls.find((call: any[]) => call[2] === 'tool B');
+        expect(toolCallA).toBeTruthy();
+        expect(toolCallB).toBeTruthy();
+        expect(toolCallA![3]?.card?.cardInstanceId).toBe('card_A');
+        expect(toolCallB![3]?.card?.cardInstanceId).toBe('card_B');
+        expect(toolCallA![3]?.cardUpdateMode).toBe('append');
+        expect(toolCallB![3]?.cardUpdateMode).toBe('append');
+    });
+
+    it('message A card in terminal state still finalizes without affecting message B', async () => {
+        const cardA = { cardInstanceId: 'card_term', state: '3', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(cardA);
+        shared.isCardInTerminalStateMock.mockImplementation((state: string) => state === '3' || state === '5');
+
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', ackReaction: '' } as any,
+            data: {
+                msgId: 'term_card', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).not.toHaveBeenCalled();
+        const cardSendCalls = shared.sendMessageMock.mock.calls.filter((call: any[]) => call[3]?.card);
+        expect(cardSendCalls).toHaveLength(0);
+    });
+
+    it('sends markdown fallback in post-dispatch when card fails mid-stream', async () => {
+        const card = { cardInstanceId: 'card_mid_fail', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockImplementation((state: string) => state === '3' || state === '5');
+
+        shared.streamAICardMock.mockImplementation(async () => {
+            card.state = '5';
+            throw new Error('stream api error');
+        });
+
+        const log = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                replyOptions?.onPartialReply?.({ text: 'partial content' });
+                await new Promise((r) => setTimeout(r, 350));
+                await dispatcherOptions.deliver({ text: 'complete final answer' }, { kind: 'final' });
+                return { queuedFinal: 'complete final answer' };
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: log as any,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardRealTimeStream: true } as any,
+            data: {
+                msgId: 'mid_fail_test', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        const debugLogs = log.debug.mock.calls.map((args: unknown[]) => String(args[0]));
+        expect(debugLogs.some((msg) => msg.includes('Card failed during streaming, sending markdown fallback'))).toBe(true);
+
+        // Fallback uses sendMessage with forceMarkdown to skip card creation
+        // while preserving journal writes.
+        const fallbackCalls = shared.sendMessageMock.mock.calls.filter(
+            (call: any[]) => call[3]?.forceMarkdown === true
+        );
+        expect(fallbackCalls.length).toBeGreaterThanOrEqual(1);
+        expect(fallbackCalls[0][2]).toBe('complete final answer');
+    });
+
+    it('acquires session lock with the resolved sessionKey', async () => {
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', ackReaction: '' } as any,
+            data: {
+                msgId: 'lock_test', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.acquireSessionLockMock).toHaveBeenCalledTimes(1);
+        expect(shared.acquireSessionLockMock).toHaveBeenCalledWith('s1');
+    });
+
+    it('releases session lock even when dispatchReply throws', async () => {
+        const releaseFn = vi.fn();
+        shared.acquireSessionLockMock.mockResolvedValueOnce(releaseFn);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockRejectedValueOnce(new Error('dispatch crash'));
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await expect(handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', ackReaction: '' } as any,
+            data: {
+                msgId: 'lock_crash', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any)).rejects.toThrow('dispatch crash');
+
+        expect(releaseFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('attempts to finalize active card when dispatchReply throws', async () => {
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi.fn().mockRejectedValueOnce(new Error('dispatch crash'));
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        const card = { cardInstanceId: 'card_on_error', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+
+        await expect(handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', ackReaction: '' } as any,
+            data: {
+                msgId: 'lock_crash_card', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any)).rejects.toThrow('dispatch crash');
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        expect(shared.finishAICardMock).toHaveBeenCalledWith(card, '❌ 处理失败', expect.anything());
+    });
+
+    it('cardRealTimeStream finalize uses accumulated multi-turn content instead of last-turn-only deliver text', async () => {
+        const card = { cardInstanceId: 'card_accum', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                // Turn 1
+                replyOptions?.onPartialReply?.({ text: 'Turn 1: Full inspection report with tables and analysis' });
+                await new Promise((r) => setTimeout(r, 350));
+
+                // Runtime signals new assistant turn (after tool call)
+                replyOptions?.onAssistantMessageStart?.();
+
+                // Turn 2: text starts fresh
+                replyOptions?.onPartialReply?.({ text: 'Turn 2 short summary' });
+                await new Promise((r) => setTimeout(r, 350));
+
+                // deliver(final) only provides last turn's text
+                await dispatcherOptions.deliver({ text: 'Turn 2 short summary' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardRealTimeStream: true, ackReaction: '', showThinking: false } as any,
+            data: {
+                msgId: 'mid_accum_test', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const finalizeContent = shared.finishAICardMock.mock.calls[0][1];
+        expect(finalizeContent).toContain('Turn 1');
+        expect(finalizeContent).toContain('Turn 2');
+        expect(finalizeContent).not.toBe('Turn 2 short summary');
+    });
+
+  // ==================== @Sub-Agent 回归测试 ====================
+  describe('@sub-agent feature', () => {
+    it('respects groupPolicy allowlist for sub-agent routing', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@expert1 帮我看看',
+        messageType: 'text',
+        atMentions: [{ name: 'expert1' }],
+      });
+      shared.sendBySessionMock.mockResolvedValue(undefined);
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'expert1', name: '专家1' }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          groupPolicy: 'allowlist',
+          allowFrom: ['allowed_group'],
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_subagent_1',
+          msgtype: 'text',
+          text: { content: '@expert1 帮我看看' },
+          conversationType: '2', // group chat
+          conversationId: 'blocked_group', // not in allowlist
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // Should send access denied message, not sub-agent response
+      expect(shared.sendBySessionMock).toHaveBeenCalledTimes(1);
+      expect(String(shared.sendBySessionMock.mock.calls[0]?.[2])).toContain('访问受限');
+    });
+
+    it('processes multiple sub-agents sequentially, not in parallel', async () => {
+      const callOrder: string[] = [];
+      const runtime = buildRuntime();
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+        .fn()
+        .mockImplementation(async ({ dispatcherOptions }) => {
+          callOrder.push('dispatch_start');
+          await dispatcherOptions.deliver({ text: 'response' }, { kind: 'final' });
+          callOrder.push('dispatch_end');
+          return { queuedFinal: 'done' };
+        });
+      // Use mockReturnValue instead of mockReturnValueOnce to ensure all getDingTalkRuntime calls return our runtime
+      shared.getRuntimeMock.mockReturnValue(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@agent1 @agent2 帮我看看',
+        messageType: 'text',
+        atMentions: [{ name: 'agent1' }, { name: 'agent2' }],
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [
+              { id: 'agent1', name: 'Agent1' },
+              { id: 'agent2', name: 'Agent2' },
+            ],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_subagent_2',
+          msgtype: 'text',
+          text: { content: '@agent1 @agent2 帮我看看' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // Sequential processing means dispatch is called twice in order
+      expect(runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledTimes(2);
+      // If parallel, we might see interleaved calls; sequential ensures complete one before next
+      expect(callOrder).toEqual(['dispatch_start', 'dispatch_end', 'dispatch_start', 'dispatch_end']);
+    });
+
+    it('handles @mention of real user without error', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@张三 你好',
+        messageType: 'text',
+        atMentions: [{ name: '张三', userId: 'real_user_123' }], // has userId = real user
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_subagent_3',
+          msgtype: 'text',
+          text: { content: '@张三 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // Should NOT show "未找到助手" error for real user
+      expect(shared.sendBySessionMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
+    it('does not show error when @mention matches real user count from atUserDingtalkIds', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      // @张三 (真人) - atUserDingtalkIds has 1 entry
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@张三 你好',
+        messageType: 'text',
+        atMentions: [{ name: '张三' }], // no userId (text mode)
+        atUserDingtalkIds: ['dingtalk_id_zhangsan'], // 1 real user
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_text_real_user',
+          msgtype: 'text',
+          text: { content: '@张三 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // unmatchedNames (1) <= realUserCount (1), so no error should be shown
+      expect(shared.sendBySessionMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
+    it('does not show error when real users are present (conservative heuristic)', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      // @张三 @不存在的agent - atUserDingtalkIds has 1 entry, but 2 @mentions
+      // With conservative heuristic: if realUserCount > 0, never report invalid agent names
+      // This avoids false positives where real user names are incorrectly reported as missing agents
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@张三 @不存在的agent 你好',
+        messageType: 'text',
+        atMentions: [{ name: '张三' }, { name: '不存在的agent' }],
+        atUserDingtalkIds: ['dingtalk_id_zhangsan'], // only 1 real user
+      });
+      shared.sendBySessionMock.mockResolvedValue(undefined);
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_text_invalid_agent',
+          msgtype: 'text',
+          text: { content: '@张三 @不存在的agent 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // Conservative heuristic: realUserCount > 0, so no error should be shown
+      // even though there's an invalid agent name
+      expect(shared.sendBySessionMock).not.toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
+    it('shows error when no real users and invalid agent name', async () => {
+      const runtime = buildRuntime();
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      // @不存在的agent - no atUserDingtalkIds (no real users)
+      // Only show error when realUserCount === 0 AND there are unmatchedNames
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@不存在的agent 你好',
+        messageType: 'text',
+        atMentions: [{ name: '不存在的agent' }],
+        atUserDingtalkIds: [], // no real users
+      });
+      shared.sendBySessionMock.mockResolvedValue(undefined);
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [{ id: 'main', name: '助手', default: true }],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_text_invalid_agent_no_real_users',
+          msgtype: 'text',
+          text: { content: '@不存在的agent 你好' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // realUserCount === 0 && unmatchedNames.length > 0, so error should be shown
+      expect(shared.sendBySessionMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.stringContaining('未找到'),
+        expect.anything(),
+      );
+    });
+
+    it('uses correct sessionWebhook for each sub-agent in order', async () => {
+      const webhookCalls: Array<{ agentId: string; webhook: string; responsePrefix: string }> = [];
+      const runtime = buildRuntime();
+      runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+        .fn()
+        .mockImplementation(async ({ dispatcherOptions }) => {
+          // Capture which agent is being processed by checking responsePrefix
+          webhookCalls.push({
+            agentId: dispatcherOptions.responsePrefix.includes('Agent1') ? 'agent1' : 'agent2',
+            webhook: 'https://session.webhook',
+            responsePrefix: dispatcherOptions.responsePrefix,
+          });
+          await dispatcherOptions.deliver({ text: 'response' }, { kind: 'final' });
+          return { queuedFinal: 'done' };
+        });
+      shared.getRuntimeMock.mockReturnValue(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@Agent1 @Agent2 帮我看看',
+        messageType: 'text',
+        atMentions: [{ name: 'Agent1' }, { name: 'Agent2' }],
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: {
+            list: [
+              { id: 'agent1', name: 'Agent1' },
+              { id: 'agent2', name: 'Agent2' },
+            ],
+          },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as any,
+        dingtalkConfig: {
+          dmPolicy: 'open',
+          messageType: 'markdown',
+          showThinking: false,
+        } as any,
+        data: {
+          msgId: 'm_webhook_order',
+          msgtype: 'text',
+          text: { content: '@Agent1 @Agent2 帮我看看' },
+          conversationType: '2', // group chat
+          conversationId: 'group_1',
+          senderId: 'user_1',
+          chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook',
+          createAt: Date.now(),
+        },
+      } as any);
+
+      // Verify order: agent1 should be processed before agent2
+      expect(webhookCalls).toHaveLength(2);
+      expect(webhookCalls[0].agentId).toBe('agent1');
+      expect(webhookCalls[1].agentId).toBe('agent2');
+      // All should use the same sessionWebhook from the inbound message
+      expect(webhookCalls.every(c => c.webhook === 'https://session.webhook')).toBe(true);
+      // Response prefixes should be distinct for each agent
+      expect(webhookCalls[0].responsePrefix).toContain('[Agent1]');
+      expect(webhookCalls[1].responsePrefix).toContain('[Agent2]');
+    });
+
+    it('falls back to resolveAgentRoute with agentId suffix when buildAgentSessionKey is unavailable', async () => {
+      const runtime = buildRuntime();
+      // Remove buildAgentSessionKey to trigger fallback path
+      delete (runtime.channel.routing as any).buildAgentSessionKey;
+      shared.getRuntimeMock.mockReturnValueOnce(runtime);
+      shared.extractMessageContentMock.mockReturnValue({
+        text: '@expert1 help',
+        messageType: 'text',
+        atMentions: [{ name: 'expert1' }],
+      });
+
+      await handleDingTalkMessage({
+        cfg: {
+          agents: { list: [{ id: 'expert1', name: 'expert1' }] },
+        },
+        accountId: 'main',
+        sessionWebhook: 'https://session.webhook',
+        log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+        dingtalkConfig: { dmPolicy: 'open', messageType: 'markdown', showThinking: false } as any,
+        data: {
+          msgId: 'fb1', msgtype: 'text', text: { content: '@expert1 help' },
+          conversationType: '2', conversationId: 'group_1',
+          senderId: 'u1', chatbotUserId: 'bot_1',
+          sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+        },
+      } as any);
+
+      // resolveAgentRoute should be called (fallback path)
+      expect(runtime.channel.routing.resolveAgentRoute).toHaveBeenCalled();
+    });
+  });
+
+    it('card finalize with empty deliver(final) text still finalizes card instead of early-returning', async () => {
+        const card = { cardInstanceId: 'card_empty_final', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions }) => {
+                await dispatcherOptions.deliver({ text: '' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', showThinking: false } as any,
+            data: {
+                msgId: 'mid_empty_final', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('cardRealTimeStream=false: finalize uses rawFinalText not reasoning content from controller', async () => {
+        const card = { cardInstanceId: 'card_no_realtime', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                replyOptions?.onReasoningStream?.({ text: 'deep thinking about the problem' });
+                await new Promise((r) => setTimeout(r, 350));
+                await dispatcherOptions.deliver({ text: 'Here is the final answer.' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', showThinking: false, cardRealTimeStream: false } as any,
+            data: {
+                msgId: 'mid_norealtime', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const finalizeContent = shared.finishAICardMock.mock.calls[0][1];
+        expect(finalizeContent).toBe('Here is the final answer.');
+        expect(finalizeContent).not.toContain('思考中');
+    });
+
+    it('file-only response finalizes card with Done instead of reasoning content', async () => {
+        const card = { cardInstanceId: 'card_file_only', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        const runtime = buildRuntime();
+        runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher = vi
+            .fn()
+            .mockImplementation(async ({ dispatcherOptions, replyOptions }) => {
+                replyOptions?.onReasoningStream?.({ text: 'Let me send the file' });
+                await new Promise((r) => setTimeout(r, 350));
+                // Bot sent file via tool, deliver(final) has no text and no media
+                await dispatcherOptions.deliver({ text: '' }, { kind: 'final' });
+                return {};
+            });
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardRealTimeStream: true, showThinking: false } as any,
+            data: {
+                msgId: 'mid_file_only', msgtype: 'text', text: { content: 'send me the file' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const finalizeContent = shared.finishAICardMock.mock.calls[0][1];
+        expect(finalizeContent).not.toContain('思考中');
+        expect(finalizeContent).not.toContain('send');
+    });
+
+    it('cardAtSender: sends @mention after card finalize in group chat', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_1', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+        shared.sendBySessionMock.mockResolvedValue({});
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_group', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        // Should have called sendBySession with atUserId for the @mention
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(1);
+    });
+
+    it('cardAtSender: does NOT send @mention when cardAtSender is false (default)', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_2', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card' } as any,
+            data: {
+                msgId: 'mid_at_noconfig', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(0);
+    });
+
+    it('cardAtSender: does NOT send @mention in direct messages even when enabled', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_3', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_dm', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '1', conversationId: 'cid_ok', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        const atCalls = shared.sendBySessionMock.mock.calls.filter(
+            (call: any[]) => call[3]?.atUserId === 'user_1',
+        );
+        expect(atCalls.length).toBe(0);
+    });
+
+    it('cardAtSender: swallows @mention error without affecting card finalization', async () => {
+        const runtime = buildRuntime();
+        shared.getRuntimeMock.mockReturnValueOnce(runtime);
+        shared.extractMessageContentMock.mockReturnValueOnce({ text: 'hello', messageType: 'text' });
+        const card = { cardInstanceId: 'card_at_4', state: '1', lastUpdated: Date.now() } as any;
+        shared.createAICardMock.mockResolvedValueOnce(card);
+        shared.isCardInTerminalStateMock.mockReturnValue(false);
+        shared.sendBySessionMock.mockRejectedValueOnce(new Error('webhook expired'));
+
+        await handleDingTalkMessage({
+            cfg: {},
+            accountId: 'main',
+            sessionWebhook: 'https://session.webhook',
+            log: undefined,
+            dingtalkConfig: { dmPolicy: 'open', messageType: 'card', cardAtSender: '✅ 回复完成' } as any,
+            data: {
+                msgId: 'mid_at_err', msgtype: 'text', text: { content: 'hello' },
+                conversationType: '2', conversationId: 'cid_group_1', senderId: 'user_1',
+                chatbotUserId: 'bot_1', sessionWebhook: 'https://session.webhook', createAt: Date.now(),
+            },
+        } as any);
+
+        expect(shared.finishAICardMock).toHaveBeenCalledTimes(1);
+        // Card finalization succeeded despite @mention failure
+    });
 
   it("cardAtSender: sends @mention after card finalize in group chat", async () => {
     const runtime = buildRuntime();

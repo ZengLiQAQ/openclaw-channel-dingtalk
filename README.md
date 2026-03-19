@@ -55,6 +55,54 @@
 - ✅ **Markdown 表格兼容** — 自动把 Markdown 表格转换为钉钉更稳定的可读文本
 - ✅ **互动卡片** — 支持流式更新，适用于 AI 实时输出
 - ✅ **完整 AI 对话** — 接入 Clawdbot 消息处理管道
+- ✅ **@多助手路由** — 在群聊中通过 `@助手名` 路由到不同的 agent（实验性功能）
+
+### @多助手路由（实验性）
+
+> ⚠️ **实验性功能**：此功能使用框架层 `agents.list` 配置实现，与框架的 `bindings` 机制独立运作。
+
+在群聊中，用户可以通过 `@助手名` 来指定要对话的 agent。每个 agent 拥有独立的 session。
+
+```
+用户: @frontend 帮我看看这个组件的问题
+[frontend] 好的，请贴出代码...
+
+用户: @dba 数据库慢查询怎么处理？
+[dba] 从数据库角度分析...
+```
+
+#### 配置方式
+
+在 OpenClaw 配置文件中配置 `agents.list`：
+
+```json
+{
+  "agents": {
+    "list": [
+      { "id": "main", "name": "助手", "default": true },
+      { "id": "frontend", "name": "前端专家" },
+      { "id": "dba", "name": "DBA" }
+    ]
+  }
+}
+```
+
+#### 当前功能范围
+
+- @mention 解析 → agent 名匹配（支持 `name` 和 `id`）
+- 路由到独立 agent session
+- 回复自动添加 `[助手名]` 前缀
+
+#### 后续迭代计划
+
+- 群聊历史上下文注入（被 @ 的 agent 能看到近期对话）
+- 多专家协作讨论（专家间链式 @mention、讨论记录共享）
+- `/agents` 命令列出可用专家
+
+#### 已知限制
+
+- sub-agent 路由使用框架的 `buildAgentSessionKey` API，不通过 `bindings` 配置匹配
+- 与框架顶层的 `bindings` 配置**独立运作**，同时配置两者可能导致混淆
 
 ### 进程级（memory-only）运行态说明
 
