@@ -925,6 +925,16 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
   const quotedRef = buildInboundQuotedRef(data, extractedContent);
   const replyQuotedRef = createReplyQuotedRef(data.msgId);
   const content = extractedContent;
+  const hasLegacyQuoteContent =
+    typeof data.content?.quoteContent === "string" && data.content.quoteContent.trim().length > 0;
+
+  if (hasLegacyQuoteContent && !quotedRef) {
+    log?.debug?.(
+      `[DingTalk] Legacy quoteContent present without resolvable quotedRef: ` +
+      `conversationType=${data.conversationType} conversationId=${data.conversationId} ` +
+      `msgId=${data.msgId} originalMsgId=${data.originalMsgId || "(none)"}`,
+    );
+  }
 
   try {
     upsertInboundMessageContext({

@@ -446,10 +446,12 @@ export async function sendProactiveMedia(
     }
 
     // Fallback: ensure user still gets a usable link/path text.
+    const fallbackDisplayText = `📎 媒体发送失败，兜底链接/路径：${mediaPath}`;
+    const fallbackPersistedText = `媒体发送失败，兜底链接/路径：${mediaPath}`;
     const fallback = await sendProactiveTextOrMarkdown(
       config,
       target,
-      `📎 媒体发送失败，兜底链接/路径：${mediaPath}`,
+      fallbackDisplayText,
       options,
     ).catch((fallbackErr: any) => ({ __fallbackError: fallbackErr }));
 
@@ -464,7 +466,7 @@ export async function sendProactiveMedia(
       storePath: options.storePath,
       accountId: options.accountId,
       conversationId: options.conversationId || normalizedTarget,
-      text: `📎 媒体发送失败，兜底链接/路径：${mediaPath}`,
+      text: fallbackPersistedText,
       messageType: "outbound-proactive-fallback",
       quotedRef: options.quotedRef,
       delivery: {
