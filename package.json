@@ -64,7 +64,7 @@
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.3.14"
+    "openclaw": ">=2026.3.24"
   },
   "openclaw": {
     "extensions": [
@@ -88,6 +88,7 @@
       ]
     },
     "install": {
+      "minHostVersion": "2026.3.24",
       "npmSpec": "@soimy/dingtalk",
       "localPath": ".",
       "defaultChoice": "npm"

@@ -44,8 +44,15 @@ describe("plugin-sdk import structure", () => {
         const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8")) as {
             devDependencies?: Record<string, string>;
             peerDependencies?: Record<string, string>;
+            openclaw?: {
+                install?: {
+                    minHostVersion?: string;
+                };
+            };
         };
         expect(packageJson.devDependencies?.openclaw).toBeUndefined();
         expect(packageJson.peerDependencies?.openclaw).toBeDefined();
+        expect(packageJson.peerDependencies?.openclaw).toBe(">=2026.3.24");
+        expect(packageJson.openclaw?.install?.minHostVersion).toBe("2026.3.24");
     });
 });

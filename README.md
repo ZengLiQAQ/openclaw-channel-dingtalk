@@ -27,13 +27,35 @@
 
 ## 安装
 
-推荐直接通过 npm 安装：
+> [!IMPORTANT]
+> 最小兼容版本为 `OpenClaw 2026.3.24`。安装前请先升级到最新版 OpenClaw。
+>
+> 由于上游 ClawHub 安装链路目前存在 bug，暂时无法稳定通过 `openclaw plugins install @soimy/dingtalk` 完成安装。
+> 当前推荐使用源码链接安装：
+>
+> ```bash
+> git clone https://github.com/soimy/openclaw-channel-dingtalk.git
+> cd openclaw-channel-dingtalk
+> npm install # 或 pnpm install
+> openclaw plugins install -l .
+> ```
+>
+> 详见下方：[本地开发或联调可使用源码链接安装](#本地开发或联调可使用源码链接安装)
+
+如需关注上游修复进展：
+
+- ClawHub scoped package install bug: <https://github.com/openclaw/openclaw/issues/56452>
+- ClawHub plugin package owner controls: <https://github.com/openclaw/openclaw/issues/56451>
+
+历史 npm 安装命令如下，但在上游修复前不推荐使用：
 
 ```bash
 openclaw plugins install @soimy/dingtalk
 ```
 
-本地开发或联调可使用源码链接安装：
+### 本地开发或联调可使用源码链接安装
+
+当前生产安装也建议使用源码链接安装：
 
 ```bash
 git clone https://github.com/soimy/openclaw-channel-dingtalk.git
