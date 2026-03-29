@@ -16,6 +16,8 @@ Chinese version: `docs/contributor/architecture.zh-CN.md`.
 Use those documents as the source of truth for logical domain placement, incremental migration rules, and module boundaries.
 For AI-agent generated design and execution docs, write specs to `docs/spec/` and plans to `docs/plans/`. Do not create tool-specific doc roots such as `docs/superpowers/`.
 Documentation updates must follow the repo docs structure: keep `README.md` as a concise project entry page, put user-facing details in `docs/user/`, contributor/process docs in `docs/contributor/`, and release notes in `docs/releases/`. Do not expand README with long-form feature/config/troubleshooting content that belongs in `docs/`.
+Issue convention for this repo: prefer the GitHub issue templates under `.github/ISSUE_TEMPLATE/`; keep issue communication primarily in Simplified Chinese; use `问题反馈` for bugs and `功能建议` for feature ideas; and encourage reporters to include background, reproduction or goals, environment, and desensitized evidence.
+Pull request convention for this repo: use an English Conventional-style PR title such as `fix(targeting): normalize learned display names`; keep the title in English; write the PR description in Simplified Chinese; and include clearly labeled `背景`, `目标`, `实现`, `实现 TODO`, and `验证 TODO` sections.
 Planned domain summary:
 - `gateway/`: stream connection lifecycle, callback registration, inbound entry points
 - `targeting/`: peer identity, session aliasing, target resolution, and learned displayName directory

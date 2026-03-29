@@ -199,6 +199,20 @@ If your change touches inbound message extraction or media parsing:
 
 ## Filing Good Issues
 
+Prefer using the GitHub issue templates under `.github/ISSUE_TEMPLATE/`.
+For this repository, issue reports are encouraged to use Simplified Chinese so most contributors and users can discuss details efficiently.
+
+Recommended issue guidance:
+
+- use `问题反馈` for bugs, regressions, compatibility issues, or runtime failures
+- use `功能建议` for feature requests, workflow improvements, or design ideas
+- prefer a concise Chinese title that states the problem or expected outcome directly
+- for bug reports, include `背景`, `复现步骤`, `期望行为`, `实际行为`, and `环境信息`
+- for feature requests, include `背景`, `目标`, optional `建议的实现或思路`, and `验收标准或预期效果`
+- include logs, screenshots, payload samples, or references when they materially help diagnosis
+- redact secrets, tokens, tenant credentials, and private customer data before posting
+- blank issues remain available, but following the template structure will usually get you faster help
+
 When opening a bug report, include:
 
 - plugin version
@@ -223,10 +237,23 @@ For high-signal bug reports, also include issue-specific evidence:
 Please keep PRs focused and easy to review:
 
 - one problem or one tightly related improvement per PR
+- use an English Conventional-style PR title, for example `fix(targeting): normalize learned display names`
+- keep the title type, optional scope, and summary in English
+- write the PR description in Simplified Chinese
+- structure the PR description with clear sections for `背景`, `目标`, and `实现`
+- include TODO checklists for both implementation and verification in the PR description
 - link the related issue in the PR description
 - describe both what changed and why it changed
 - list automated validation you ran
 - list manual validation you ran, if any
+
+Recommended PR description outline:
+
+- `背景`: why this change is needed and what problem or issue it addresses
+- `目标`: what the PR is expected to achieve
+- `实现`: the main implementation approach and important tradeoffs
+- `实现 TODO`: a checkbox list of completed or remaining implementation items
+- `验证 TODO`: a checkbox list of automated and manual verification items
 
 For state-management changes, explicitly call out whether you changed behavior around:
 
