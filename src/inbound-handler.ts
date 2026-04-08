@@ -58,7 +58,7 @@ import {
   upsertObservedUserTarget,
 } from "./targeting/target-directory-store";
 import type { DingTalkConfig, HandleDingTalkMessageParams, Logger, MediaFile } from "./types";
-import { formatDingTalkErrorPayloadLog, getErrorMessage, getErrorResponseData, maskSensitiveData } from "./utils";
+import { formatDingTalkErrorPayloadLog, getErrorMessage, getErrorResponseData, maskSensitiveData, parseBooleanLike } from "./utils";
 import { isAbortRequestText } from "openclaw/plugin-sdk/reply-runtime";
 import { parseInlineDirectives } from "openclaw/plugin-sdk/text-runtime";
 
@@ -102,7 +102,7 @@ function resolveQuotedContextAllowFrom(
   groupId: string,
 ): string[] | undefined {
   const groupConfig = resolveGroupConfig(config, groupId);
-  return groupConfig?.groupAllowFrom ?? config.groupAllowFrom ?? config.allowFrom;
+  return groupConfig?.groupAllowFrom ?? config.groupAllowFrom;
 }
 
 function resolveQuotedVisibilitySenderId(params: {
@@ -395,31 +395,6 @@ type ReplyChunkInfo = {
 
 const INBOUND_MEDIA_DOWNLOAD_TIMEOUT_MS = 15_000;
 const DINGTALK_API_HOST = "api.dingtalk.com";
-
-function readBooleanLikeValue(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") {
-    return value;
-  }
-  if (typeof value === "number") {
-    if (value === 1) {
-      return true;
-    }
-    if (value === 0) {
-      return false;
-    }
-    return undefined;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["1", "true", "yes", "y", "on"].includes(normalized)) {
-      return true;
-    }
-    if (["0", "false", "no", "n", "off"].includes(normalized)) {
-      return false;
-    }
-  }
-  return undefined;
-}
 
 /**
  * Download DingTalk media file via runtime media service (sandbox-compatible).
@@ -1568,6 +1543,7 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
 
     const cleanedText = contentLines.join("\n").trim();
+    const inlineTextWasTransformed = parsedInline.text !== normalizedText;
     if (mediaUrls.length === 0) {
       const standaloneMediaSource = extractStandaloneMediaSource(cleanedText);
       if (standaloneMediaSource) {
@@ -1580,7 +1556,10 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     }
 
     return {
-      text: mediaUrls.length > 0 || parsedInline.hasAudioTag ? cleanedText || undefined : text,
+      // Keep ordinary text formatting stable except for newline normalization.
+      // Once inline parsing actually strips directives/media lines, return the
+      // cleaned body text instead of the original raw payload.
+      text: mediaUrls.length > 0 || inlineTextWasTransformed ? cleanedText || undefined : normalizedText,
       mediaUrls,
       audioAsVoice: parsedInline.audioAsVoice,
     };
@@ -1619,15 +1598,17 @@ export async function handleDingTalkMessage(params: HandleDingTalkMessageParams)
     payload: ReplyStreamPayload,
     inlineReplyPayload?: ReturnType<typeof parseInlineReplyPayloadText>,
   ): boolean {
+    // Normalize all reply-time voice hints into the shared `audioAsVoice`
+    // semantic that strategies and media delivery use downstream.
     const richPayload = payload as ReplyStreamPayload & {
       audioAsVoice?: unknown;
       asVoice?: unknown;
     };
-    const sharedValue = readBooleanLikeValue(richPayload.audioAsVoice);
+    const sharedValue = parseBooleanLike(richPayload.audioAsVoice);
     if (sharedValue !== undefined) {
       return sharedValue;
     }
-    if (readBooleanLikeValue(richPayload.asVoice) === true) {
+    if (parseBooleanLike(richPayload.asVoice) === true) {
       return true;
     }
     return inlineReplyPayload?.audioAsVoice === true;
